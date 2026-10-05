@@ -1,0 +1,48 @@
+{
+  "name": "pocket-assistant",
+  "version": "1.0.0",
+  "description": "A cute 3D desktop assistant that floats on your screen",
+  "main": "main.js",
+  "author": "Dinesh",
+  "scripts": {
+    "start": "electron .",
+    "dist": "electron-builder",
+    "release": "electron-builder --publish always",
+    "debug": "electron . --dev"
+  },
+  "dependencies": {
+    "electron-updater": "^6.8.9"
+  },
+  "devDependencies": {
+    "electron": "^44.5.1",
+    "electron-builder": "^26.15.3"
+  },
+  "build": {
+    "appId": "com.yourname.pocketassistant",
+    "productName": "Pocket Assistant",
+    "files": [
+      "main.js",
+      "preload.js",
+      "index.html",
+      "renderer.js",
+      "vendor/**",
+      "character.glb"
+    ],
+    "publish": [
+      {
+        "provider": "github",
+        "owner": "dineshmotorindia",
+        "repo": "pocket-assistant"
+      }
+    ],
+    "win": {
+      "target": "nsis"
+    },
+    "mac": {
+      "target": "dmg"
+    },
+    "linux": {
+      "target": "AppImage"
+    }
+  }
+}
