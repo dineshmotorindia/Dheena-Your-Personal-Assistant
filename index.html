@@ -1,0 +1,19 @@
+<!DOCTYPE html>
+<html lang="en"><head><meta charset="utf-8"><title>Pocket Assistant</title>
+<meta http-equiv="Content-Security-Policy" content="default-src 'self'; script-src 'self'; style-src 'self' 'unsafe-inline'; connect-src blob: data: https://api.open-meteo.com https://geocoding-api.open-meteo.com; img-src 'self' data: blob:">
+<style>
+html,body{margin:0;background:transparent;overflow:hidden;user-select:none;font:15px/1.4 "Trebuchet MS","Segoe UI",system-ui,sans-serif}
+#c{position:absolute;left:0;bottom:0;width:300px;height:420px;cursor:grab}
+#bubble{display:none;position:absolute;left:8px;right:8px;bottom:422px;background:#fff;color:#241d4d;border-radius:16px;padding:10px 12px;box-shadow:0 4px 14px #0003}
+#bubble.on{display:block}
+#bubble::after{content:"";position:absolute;bottom:-9px;left:50%;margin-left:-9px;border:9px solid transparent;border-bottom:0;border-top-color:#fff}
+#msg{max-height:64px;overflow:auto;white-space:pre-line}
+#cmd{display:none;width:100%;box-sizing:border-box;margin-top:8px;border:1.5px solid #cfc8ff;border-radius:10px;padding:7px 9px;font:inherit;user-select:text}
+#cmd:focus{outline:2px solid #8a7cf5}
+#bubble.inp #cmd{display:block}
+</style></head>
+<body>
+<div id="bubble"><div id="msg"></div><input id="cmd" placeholder="Type a command..." autocomplete="off"></div>
+<canvas id="c" width="300" height="420"></canvas>
+<script type="module" src="renderer.js"></script>
+</body></html>
