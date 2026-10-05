@@ -1,4 +1,4 @@
-const { app, BrowserWindow, ipcMain, Menu, screen } = require("electron");
+const { app, BrowserWindow, ipcMain, Menu, screen, shell } = require("electron");
 const path = require("path");
 const fs = require("fs");
 let win;
@@ -7,7 +7,7 @@ if (!app.requestSingleInstanceLock()) app.quit();
 
 function create() {
   const { workArea: a } = screen.getPrimaryDisplay();
-  const W = 300, H = 560;
+  const W = 300, H = 620;
   win = new BrowserWindow({
     width: W, height: H, x: DEBUG ? a.x + 60 : a.x + a.width - W - 20, y: DEBUG ? a.y + 20 : a.y + a.height - H,
     transparent: !DEBUG, frame: DEBUG, resizable: DEBUG, hasShadow: false, backgroundColor: DEBUG ? "#334155" : "#00000000",
@@ -25,11 +25,16 @@ function create() {
   if (DEBUG) win.webContents.openDevTools({ mode: "detach" });
 }
 ipcMain.handle("model", () => { const p = path.join(__dirname, "character.glb"); const ok = fs.existsSync(p); console.log("[main] character.glb:", ok ? "found, " + fs.statSync(p).size + " bytes" : "NOT FOUND at " + p); return ok ? fs.readFileSync(p) : null; });
+ipcMain.on("open", (_e, u) => { if (typeof u === "string" && /^https:\/\//.test(u)) shell.openExternal(u); });
 ipcMain.on("move", (_e, dx, dy) => { if (!win) return; const [x, y] = win.getPosition(); win.setPosition(Math.round(x + dx), Math.round(y + dy)); });
 // Lets clicks pass through the transparent parts of the window (not supported on Linux).
 ipcMain.on("ignore", (_e, flag) => { if (win && process.platform !== "linux") win.setIgnoreMouseEvents(flag, { forward: true }); });
 ipcMain.on("menu", () => {
   Menu.buildFromTemplate([
+    { label: "Emotes", submenu: ["wave", "dance", "jump", "skip", "clap", "spin", "bow", "flex", "cheer"].map(n => ({ label: n[0].toUpperCase() + n.slice(1), click: () => win.webContents.send("cmd", "emote", n) })) },
+    { label: "Voice on", click: () => win.webContents.send("cmd", "run", "voice on") },
+    { label: "Voice off", click: () => win.webContents.send("cmd", "run", "voice off") },
+    { type: "separator" },
     { label: "Start at login", type: "checkbox", checked: app.getLoginItemSettings().openAtLogin, click: i => app.setLoginItemSettings({ openAtLogin: i.checked }) },
     { type: "separator" },
     { label: "Quit", click: () => app.quit() }

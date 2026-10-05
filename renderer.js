@@ -1,9 +1,12 @@
 import * as THREE from "./vendor/three.module.js";
 import { GLTFLoader } from "./vendor/GLTFLoader.js";
+import * as K from "./knowledge.js";
 const $ = s => document.querySelector(s);
 const pa = window.pa || {};
 console.log("[assistant] bridge functions:", Object.keys(pa).join(", ") || "NONE (preload.js did not load)");
 const CW = 300, CH = 420;          // window canvas size
+const POSE_FLIP_SIDES = false;     // set true if left and right arms/legs are swapped in emotes
+const POSE_FLIP_FRONT = false;     // set true if forward and backward moves are reversed
 const MODEL_FACING = 0;            // set to Math.PI if your model shows its back
 
 /* ---------- 3D character: a stylized you ---------- */
@@ -80,7 +83,7 @@ lock(-.35, 1, .15, .45, .8, .6, .9, .3); lock(.6, .75, .45, .28, 1.2, .5, .6, -.
 hm(sph(.18), beardM, 0, -.3, .9, 1.5, .3, .5);                                              // moustache
 const smile = hm(new THREE.TorusGeometry(.11, .035, 8, 20, Math.PI), M(0xF5ECE4, { roughness: .4 }), 0, -.36, .9, 1, 1, 1); smile.rotation.z = Math.PI;
 
-let glb = null;
+let glb = null, talkUntil = 0, emo = null;
 let look = { x: 0, y: 0 }, nextBlink = 2, blinkAt = -1, waveUntil = 0, jumpUntil = 0;
 const clock = { getElapsedTime: () => performance.now() / 1000 };
 (function frame() {
@@ -100,6 +103,47 @@ const clock = { getElapsedTime: () => performance.now() / 1000 };
   if (glb) glb.update(t);
   renderer.render(scene, cam); requestAnimationFrame(frame);
 })();
+
+/* ---------- emotes: procedural poses (angles in radians, world axes) ---------- */
+const mix = (a, b, u) => a.map((v, i) => v + (b[i] - v) * u);
+// A("lArm", x, y, z) points a limb toward a direction: x = outward (mirrored for right side), y = up, z = toward the viewer.
+const EM = {
+  wave:  [3, (t, P, o, A) => { const w = Math.sin(t * 9); A("rArm", .75, .55, .1); A("rFore", .25 + w * .5, 1, .15); P("chest", 0, -.08, 0); P("head", 0, .1, 0); }],
+  dance: [8, (t, P, o, A) => {                       // kuthu-style: wide bent-knee stance, bounce, one arm up and one down, switching
+    const b = t * 5.2, s = Math.sin(b), a = Math.sin(b / 2), ua = (1 + a) / 2, ub = 1 - ua, L = Math.max(0, s), R = Math.max(0, -s), pump = Math.sin(b * 2) * .15;
+    o.y = -.17 + Math.abs(s) * .07; o.x = a * .1;
+    A("lUp", ...mix([.4, -.9, .15], [.35, -.7, .55], L)); A("rUp", ...mix([.4, -.9, .15], [.35, -.7, .55], R));
+    A("lLeg", ...mix([.1, -.85, -.35], [.1, -.6, -.75], L)); A("rLeg", ...mix([.1, -.85, -.35], [.1, -.6, -.75], R));
+    A("lArm", ...mix([.35, -.7, .45], [.3, .95 + pump, .1], ua)); A("lFore", ...mix([.1, -.3, .95], [.4, 1, 0], ua));
+    A("rArm", ...mix([.35, -.7, .45], [.3, .95 + pump, .1], ub)); A("rFore", ...mix([.1, -.3, .95], [.4, 1, 0], ub));
+    P("spine", .1 + s * .05, 0, -a * .1); P("chest", 0, a * .15, 0); P("head", 0, -a * .1, a * .08); }],
+  jump:  [2.4, (t, P, o, A) => { const p = (t * 1.5) % 1, h = 4 * p * (1 - p), c = p < .2 ? 1 - p / .2 : p > .85 ? (p - .85) / .15 : 0;
+    o.y = h * .6 - .42 * c;
+    const th = mix(mix([.12, -1, 0], [.15, -.6, .8], c), [.1, -.8, .55], h), sh = mix(mix([.05, -1, 0], [0, -.9, -.4], c), [0, -.6, -.8], h);
+    A("lUp", ...th); A("rUp", ...th); A("lLeg", ...sh); A("rLeg", ...sh);
+    const ar = mix(mix([.12, -1, 0], [.2, -.8, -.55], c), [.25, 1, .1], h), fo = mix(mix([.1, -1, .05], [.1, -.9, -.3], c), [.3, 1, 0], h);
+    A("lArm", ...ar); A("rArm", ...ar); A("lFore", ...fo); A("rFore", ...fo); P("spine", .15 * c, 0, 0); }],
+  skip:  [5, (t, P, o, A) => { const s = Math.sin(t * 7), a = Math.max(0, s), b = Math.max(0, -s), u = (1 + s) / 2; o.y = Math.abs(s) * .1;
+    A("lUp", ...mix([.12, -1, 0], [.1, -.65, .75], a)); A("lLeg", ...mix([.05, -1, .05], [0, -.6, -.8], a));
+    A("rUp", ...mix([.12, -1, 0], [.1, -.65, .75], b)); A("rLeg", ...mix([.05, -1, .05], [0, -.6, -.8], b));
+    A("lArm", ...mix([.1, -.6, .7], [.15, -.9, -.4], u)); A("rArm", ...mix([.15, -.9, -.4], [.1, -.6, .7], u));
+    A("lFore", .1, -.3, .95); A("rFore", .1, -.3, .95); P("spine", .1, 0, 0); P("chest", 0, -s * .15, 0); }],
+  clap:  [3.2, (t, P, o, A) => { const u = (1 + Math.sin(t * 13)) / 2; o.y = Math.abs(Math.sin(t * 6.5)) * .03;
+    A("lArm", .4, -.5, .75); A("rArm", .4, -.5, .75); A("lFore", ...mix([.55, .1, .8], [-.2, .1, 1], u)); A("rFore", ...mix([.55, .1, .8], [-.2, .1, 1], u)); P("head", .1, 0, 0); }],
+  spin:  [1.6, (t, P, o, A) => { o.spin = (1 - Math.cos(Math.min(1, t / 1.4) * Math.PI)) * Math.PI; A("lArm", 1, .1, 0); A("rArm", 1, .1, 0); A("lFore", 1, .1, 0); A("rFore", 1, .1, 0); A("lUp", .25, -1, 0); A("rUp", .25, -1, 0); }],
+  bow:   [2.6, (t, P, o, A) => { const b = Math.sin(Math.min(1, t / 2.6) * Math.PI); P("spine", b * .5, 0, 0); P("chest", b * .3, 0, 0); P("head", b * .15, 0, 0); A("rArm", .15, -.7, .6); A("rFore", -.8, .25, .6); }],
+  flex:  [3.4, (t, P, o, A) => { const tr = Math.sin(t * 22) * .03; o.y = -.08;
+    A("lArm", 1, .1, .1); A("rArm", 1, .1, .1); A("lFore", .1 + tr, 1, .05); A("rFore", .1 + tr, 1, .05);
+    A("lUp", .4, -.9, 0); A("rUp", .4, -.9, 0); A("lLeg", .1, -.95, 0); A("rLeg", .1, -.95, 0); P("chest", -.08, Math.sin(t * 2) * .2, 0); P("head", 0, Math.sin(t * 2) * -.15, 0); }],
+  cheer: [3.2, (t, P, o, A) => { const s = Math.abs(Math.sin(t * 5)), w = Math.sin(t * 10) * .15; o.y = s * .3;
+    A("lArm", .45, .9, .05); A("rArm", .45, .9, .05); A("lFore", .4 + w, 1, 0); A("rFore", .4 + w, 1, 0);
+    A("lUp", ...mix([.12, -1, 0], [.1, -.75, .5], s)); A("rUp", ...mix([.12, -1, 0], [.1, -.75, .5], s)); A("lLeg", ...mix([.05, -1, 0], [0, -.7, -.7], s)); A("rLeg", ...mix([.05, -1, 0], [0, -.7, -.7], s)); P("head", -.15, 0, 0); }],
+};
+const EMOSAY = { wave: "Hi hi! 👋", dance: "Let's dance! 💃", jump: "Wheee! 🦘", skip: "Skip skip! 🤸", clap: "👏👏👏", spin: "Wheee, spinning! 🌀", bow: "At your service. 🙇", flex: "Strong! 💪", cheer: "Hooray! 🎉" };
+function playEmote(name) {
+  const now = clock.getElapsedTime(); talkUntil = 0;
+  if (glb) glb.play(name); else if (/jump|cheer/.test(name)) jumpUntil = now + 1.6; else waveUntil = now + 1.6;
+}
 
 /* ---------- real 3D model: put character.glb next to index.html ---------- */
 const V1 = new THREE.Vector3(), V2 = new THREE.Vector3(), Q1 = new THREE.Quaternion(), Q2 = new THREE.Quaternion(), Q3 = new THREE.Quaternion(), EU = new THREE.Euler(), QO = new THREE.Quaternion();
@@ -140,17 +184,70 @@ function useModel(gltf) {
   const idleA = idle ? mixer.clipAction(idle).play() : null;
   const waveA = wave && wave !== idle ? mixer.clipAction(wave).setLoop(THREE.LoopOnce, 1) : null;
   mixer.addEventListener("finished", e => { if (e.action === waveA) { waveA.fadeOut(.25); idleA && idleA.reset().fadeIn(.25).play(); } });
-  let last = 0, seenWave = 0, lx = 0, ly = 0;
-  glb = { box, update(t) {
+  /* bones + procedural poses (used when the model has no animations of its own) */
+  const side = n => /left|[_.:-]l([_.:-]|$)|^l[_.:-]/i.test(n) ? "l" : /right|[_.:-]r([_.:-]|$)|^r[_.:-]/i.test(n) ? "r" : "";
+  const classify = n => {
+    const s = n.toLowerCase(), d = side(n);
+    if (/twist|roll|_end|nub|toe|foot|hand|finger|thumb|index|middle|ring|pinky|eye|jaw|hair|teeth|tongue|armature/.test(s)) return null;
+    if (/hips|pelvis/.test(s)) return "hips";
+    if (/head/.test(s)) return "head";
+    if (/neck/.test(s)) return "neck";
+    if (/spine|chest/.test(s)) return /spine2|chest|upper/.test(s) ? "chest" : "spine";
+    if (!d || /shoulder|clav/.test(s)) return null;
+    if (/fore|lowerarm/.test(s)) return d + "Fore";
+    if (/arm/.test(s)) return d + "Arm";
+    if (/upleg|upperleg|thigh/.test(s)) return d + "Up";
+    if (/leg|calf|shin/.test(s)) return d + "Leg";
+    return null;
+  };
+  const B = {}; model.traverse(o => { if (o.isBone) { const k = classify(o.name); if (k && !B[k]) B[k] = o; } });
+  model.updateMatrixWorld(true);
+  const chainQ = n => { const q = new THREE.Quaternion(); for (; n && n !== model; n = n.parent) q.premultiply(n.quaternion); return q; };
+  const mp = b => model.worldToLocal(b.getWorldPosition(new THREE.Vector3()));
+  const depth = b => { let d = 0; for (let n = b.parent; n && n !== model; n = n.parent) d++; return d; };
+  const rest = Object.entries(B).map(([key, b]) => { const c = b.children.find(x => x.isBone);
+    return { key, b, q: b.quaternion.clone(), pq: chainQ(b.parent), dir: c ? mp(c).sub(mp(b)).normalize() : null, anc: null }; }).sort((x, y) => depth(x.b) - depth(y.b));
+  rest.forEach(r => { for (let n = r.b.parent; n && n !== model; n = n.parent) { if (rest.some(x => x.b === n)) { r.anc = n; break; } } });
+  let swap = B.lArm && B.rArm ? mp(B.lArm).x < mp(B.rArm).x : false;     // 'left' bone on the screen-left? then swap sides
+  if (POSE_FLIP_SIDES) swap = !swap;
+  if (swap) rest.forEach(r => { if (/^[lr](Arm|Fore|Up|Leg)$/.test(r.key)) r.key = (r.key[0] === "l" ? "r" : "l") + r.key.slice(1); });
+  console.log("[assistant] sides swapped:", swap);
+  const QT = new THREE.Quaternion(), QR = new THREE.Quaternion(), QD = new THREE.Quaternion(), IDQ = new THREE.Quaternion(), TV = new THREE.Vector3();
+  const morphs = [];
+  model.traverse(o => { if (o.isMesh && o.morphTargetDictionary) { const k = Object.keys(o.morphTargetDictionary).find(n => /^(jawopen|mouthopen|viseme_aa|v_aa)$/i.test(n)); if (k) morphs.push([o, o.morphTargetDictionary[k]]); } });
+  console.log("[assistant] bones found:", rest.map(r => r.key).join(" ") || "none", "| mouth shapes:", morphs.length);
+  let last = 0, seenWave = 0, lx = 0, ly = 0, mouth = 0, tw = 0;
+  glb = { box, play(name) { emo = { name, t0: last }; }, update(t) {
     const dt = Math.min(.1, Math.max(0, t - last)); last = t;
-    if (waveA && waveUntil !== seenWave) { seenWave = waveUntil; waveA.reset().fadeIn(.2).play(); idleA && idleA.fadeOut(.2); }
+    const talking = t < talkUntil;
     mixer.update(dt);
-    if (head) {
-      if (!clips.length) head.quaternion.copy(headQ0);
-      lx += (look.x - lx) * .1; ly += (look.y - ly) * .1;
-      head.quaternion.multiply(QO.setFromEuler(EU.set(-ly * .2, lx * .45, 0)));
+    lx += (look.x - lx) * .1; ly += (look.y - ly) * .1;
+    if (clips.length) {                                   // the model brings its own animations
+      if (waveA && waveUntil !== seenWave) { seenWave = waveUntil; waveA.reset().fadeIn(.2).play(); idleA && idleA.fadeOut(.2); }
+      if (head) head.quaternion.multiply(QR.setFromEuler(EU.set(-ly * .2, lx * .45, 0)));
+    } else {
+      const p = {}, aim = {}, o = { x: 0, y: 0, spin: 0 };
+      let W = 1; const fr = POSE_FLIP_FRONT ? -1 : 1;
+      const P = (k, x, y, z) => { const a = p[k] || (p[k] = [0, 0, 0]); a[0] += x * W * fr; a[1] += y * W; a[2] += z * W; };
+      const A = (k, x, y, z) => { aim[k] = { v: new THREE.Vector3(k[0] === "r" ? -x : x, y, z * fr), w: W }; };
+      P("spine", Math.sin(t * 1.6) * .015, 0, 0); P("head", -ly * .2, lx * .45, 0);
+      const E = emo && EM[emo.name];
+      tw += ((talking && !E ? 1 : 0) - tw) * .12;
+      if (E && t - emo.t0 < E[0]) { const et = t - emo.t0; W = Math.min(1, et / .3, (E[0] - et) / .3); E[1](et, P, o, A); }
+      else { emo = null; if (tw > .01) { W = tw; P("head", Math.sin(t * 9) * .05, 0, 0); A("rArm", .3, -.75, .55); A("rFore", .1 + .2 * Math.sin(t * 3), -.15, .95); } }
+      const delta = new Map();
+      rest.forEach(r => {
+        const pd = r.anc ? delta.get(r.anc) : IDQ, ai = aim[r.key];
+        if (ai && r.dir) { TV.copy(r.dir).lerp(ai.v, ai.w).normalize(); QR.setFromUnitVectors(r.dir, TV); QD.copy(pd).invert().multiply(QR); }
+        else if (p[r.key]) QD.setFromEuler(EU.set(p[r.key][0], p[r.key][1], p[r.key][2]));
+        else QD.identity();
+        delta.set(r.b, new THREE.Quaternion().copy(pd).multiply(QD));
+        r.b.quaternion.copy(QT.copy(r.pq).invert().multiply(QD).multiply(r.pq).multiply(r.q));
+      });
+      pet.position.y += o.y; pet.position.x = o.x; holder.rotation.y = o.spin;
     }
-    if (!clips.length) holder.position.y = Math.sin(t * 1.6) * .015;
+    const target = talking ? .12 + .38 * Math.abs(Math.sin(t * 13)) * (.6 + .4 * Math.sin(t * 5.3)) : 0;
+    mouth += (target - mouth) * .5; morphs.forEach(([m, i]) => m.morphTargetInfluences[i] = mouth);
   } };
 }
 if (pa.readModel) pa.readModel().then(buf => {
@@ -183,8 +280,9 @@ let open = false, hideT, idleT;
 function say(t, { loud = false, wave = true } = {}) {
   msg.textContent = t; bub.classList.add("on");
   const now = clock.getElapsedTime();
-  if (wave) waveUntil = now + 1.2;
-  if (loud) { jumpUntil = now + 1.6; try { speechSynthesis.cancel(); speechSynthesis.speak(new SpeechSynthesisUtterance(t.replace(/^⏰ /, ""))); } catch {} }
+  if (wave) { waveUntil = now + 1.2; talkUntil = now + Math.min(9, .5 + t.length * .055); }
+  if (loud) jumpUntil = now + 1.6;
+  if (loud || D.voice) { try { speechSynthesis.cancel(); speechSynthesis.speak(new SpeechSynthesisUtterance(t.replace(/^⏰ /, ""))); } catch {} }
   clearTimeout(hideT);
   if (!open) hideT = setTimeout(() => bub.classList.remove("on"), Math.max(loud ? 15000 : 5000, t.length * 70));
 }
@@ -222,23 +320,47 @@ async function weather(city) {
   } catch { say("I couldn't reach the weather service. Check your internet."); }
 }
 
+async function wiki(topic) {
+  say("Looking that up...", { wave: false });
+  try {
+    const s = await (await fetch("https://en.wikipedia.org/w/api.php?action=opensearch&limit=1&format=json&origin=*&search=" + encodeURIComponent(topic))).json();
+    const title = s[1] && s[1][0]; if (!title) return say("I couldn't find that. Try: google " + topic);
+    const r = await (await fetch("https://en.wikipedia.org/api/rest_v1/page/summary/" + encodeURIComponent(title))).json();
+    let t = (r.extract || "").split(". ").slice(0, 2).join(". "); if (t.length > 280) t = t.slice(0, 277) + "...";
+    say((t || "No summary available.") + "\n(Source: Wikipedia)");
+  } catch { say("I couldn't reach the internet. Check your connection."); }
+}
+
 function run(raw) {
   const q = raw.trim(); if (!q) return setOpen(false);
+  const n = q.toLowerCase().replace(/[?!.]+$/, "").trim();
   let m;
   if (m = q.match(new RegExp("^(?:remind me|reminder)(?: to)?\\s+(.+?)\\s+in\\s+(\\d+)\\s*" + T, "i"))) { addRem(m[1], ms(+m[2], m[3])); say(`Okay! I'll remind you to ${m[1]} in ${m[2]} ${m[3]}.`); }
   else if (m = q.match(new RegExp("^(?:set (?:a )?)?timer(?: for)?\\s+(\\d+)\\s*" + T, "i"))) { addRem("Your timer is up!", ms(+m[1], m[2])); say(`Timer set for ${m[1]} ${m[2]}.`); }
   else if (m = q.match(/^(?:add )?(?:task|todo|to-do)\s+(.+)/i)) { D.tasks.unshift({ text: m[1] }); save(); say("Added task: " + m[1]); }
-  else if (/^(show |my )?(tasks|todos?)$/i.test(q)) say(list(D.tasks, "No tasks. Say: add task buy milk"));
+  else if (/^(show |my )?(tasks|todos?)$/i.test(n)) say(list(D.tasks, "No tasks. Say: add task buy milk"));
   else if (m = q.match(/^(?:done|finish(?:ed)?|complete)\s+(?:task\s+)?(\d+)/i)) { const t = D.tasks.splice(m[1] - 1, 1)[0]; save(); say(t ? "Nice! Done: " + t.text : "I can't find that task number."); }
   else if (m = q.match(/^(?:add )?(?:note|remember)\s+(.+)/i)) { D.notes.unshift({ text: m[1] }); save(); say("Note saved."); }
-  else if (/^(show |my )?notes$/i.test(q)) say(list(D.notes, "No notes. Say: note wifi password 1234"));
-  else if (/^clear notes$/i.test(q)) { D.notes = []; save(); say("Notes cleared."); }
-  else if (/^(show |my )?(reminders|timers)$/i.test(q)) say(D.rem.length ? D.rem.map(r => `${Math.max(1, Math.round((r.due - Date.now()) / 60000))} min: ${r.text}`).join("\n") : "Nothing scheduled.");
+  else if (/^(show |my )?notes$/i.test(n)) say(list(D.notes, "No notes. Say: note wifi password 1234"));
+  else if (/^clear notes$/i.test(n)) { D.notes = []; save(); say("Notes cleared."); }
+  else if (/^(show |my )?(reminders|timers)$/i.test(n)) say(D.rem.length ? D.rem.map(r => `${Math.max(1, Math.round((r.due - Date.now()) / 60000))} min: ${r.text}`).join("\n") : "Nothing scheduled.");
+  else if (m = n.match(/^(?:please |can you |could you |do a |do |let'?s |show me |play )?(wave|dance|jump|skip|clap|spin|bow|flex|cheer)(?: for me| again| now| please)?$/)) { playEmote(m[1]); say(EMOSAY[m[1]], { wave: false }); }
+  else if (m = n.match(/^voice (on|off)$/)) { D.voice = m[1] === "on"; save(); say(D.voice ? "Voice is on. 🔊" : "Voice is off. 🔇"); }
+  else if (/\d/.test(n) && /[+\-*/x×÷^%]/.test(n) && (m = n.match(/^(?:what is |what's |calculate |calc )?([\d\s+\-*/().%^x×÷]+)$/))) {
+    try { const v = Function('"use strict";return (' + m[1].replace(/[x×]/g, "*").replace(/÷/g, "/").replace(/\^/g, "**") + ")")(); say(Number.isFinite(v) ? `${m[1].trim()} = ${+v.toFixed(6)}` : "That doesn't compute. 🤔"); } catch { say("I couldn't read that sum."); }
+  }
+  else if (/flip a coin|coin toss|toss a coin/.test(n)) say(Math.random() < .5 ? "Heads! 🪙" : "Tails! 🪙");
+  else if (/roll (a )?(dice|die)/.test(n)) say("🎲 You rolled a " + (1 + Math.floor(Math.random() * 6)));
+  else if (m = q.match(/^(?:google|search(?: google)?(?: for)?)\s+(.+)/i)) { pa.open?.("https://www.google.com/search?q=" + encodeURIComponent(m[1])); say("Opening Google for: " + m[1]); }
   else if (m = q.match(/weather(?: in (.+))?/i)) weather(m[1]);
-  else if (/^(what )?time/i.test(q)) say(new Date().toLocaleTimeString([], { hour: "numeric", minute: "2-digit" }));
-  else if (/date|day/i.test(q)) say(new Date().toLocaleDateString([], { weekday: "long", day: "numeric", month: "long" }));
-  else if (/^(hi|hello|hey)\b/i.test(q)) say("Hello! ✨");
-  else say("Try: remind me to ... in 10 minutes, add task ..., show tasks, note ..., timer 5 minutes, weather in Chennai");
+  else if (/^(what('?s| is) )?(the )?time( now)?$/.test(n)) say(new Date().toLocaleTimeString([], { hour: "numeric", minute: "2-digit" }));
+  else if (/^(what('?s| is) )?(the |today'?s )?(date|day)( today)?$/.test(n)) say(new Date().toLocaleDateString([], { weekday: "long", day: "numeric", month: "long", year: "numeric" }));
+  else {
+    const a = K.answer(n);
+    if (a) say(a);
+    else if (m = n.match(/^(?:who is|who was|what is|what are|what was|tell me about|define|explain)\s+(?:a |an |the )?(.+)/)) wiki(m[1]);
+    else say("I don't know that yet. 🤔 Try \"google " + n.slice(0, 40) + "\" or say \"help\".");
+  }
 }
 
 setInterval(() => {
@@ -247,4 +369,10 @@ setInterval(() => {
   due.forEach(r => { say("⏰ " + r.text, { loud: true }); try { new Notification("Pocket Assistant", { body: r.text }); } catch {} });
 }, 1000);
 
-say("Hi! I'm your assistant. Click me and tell me what you need.");
+const EMO = [["👋", "wave"], ["💃", "dance"], ["🦘", "jump"], ["🤸", "skip"], ["👏", "clap"], ["🌀", "spin"], ["🙇", "bow"], ["💪", "flex"], ["🎉", "cheer"]];
+const QUICK = [["Joke", "tell me a joke"], ["Weather", "weather"], ["Time", "time"], ["Fun fact", "fun fact"], ["Motivate", "motivate me"], ["Help", "help"]];
+const mkBtn = (label, title, fn) => { const b = document.createElement("button"); b.textContent = label; b.title = title; b.onclick = () => { fn(); bump(); }; return b; };
+EMO.forEach(([i, nme]) => $("#em").append(mkBtn(i, nme, () => playEmote(nme))));
+QUICK.forEach(([l, qq]) => $("#qs").append(mkBtn(l, qq, () => run(qq))));
+pa.on?.((kind, v) => kind === "emote" ? playEmote(v) : run(v));
+say("Hi! I'm " + K.NAME + ". Click me, then type, or tap a button!");
